@@ -1,61 +1,104 @@
+import time
 import yaml
 import requests
-import time
 from collections import defaultdict
+import json
+from urllib.parse import urlparse
+import threading
+from constants import *
 
-# Function to load configuration from the YAML file
+stop_main_thread = False # A global argument to inform the main thread that exception occurs in child thread
+
 def load_config(file_path):
+    """
+    Use the generator to load the config file and yield endpoint values one by one.
+    """
     with open(file_path, 'r') as file:
-        return yaml.safe_load(file)
+        for endpoint in yaml.safe_load(file):
+            yield endpoint
 
-# Function to perform health checks
+
+def string_to_json_parser(element):
+    """
+    Parses the body element to JSON, if body is missing return "None".
+    """
+    return json.loads(element) if element else None
+
+
 def check_health(endpoint):
-    url = endpoint['url']
-    method = endpoint.get('method')
-    headers = endpoint.get('headers')
-    body = endpoint.get('body')
+    """
+    Function to perform health checks
+    If 'method' value is missing set default to "GET"
+    Parse body to JSON or set body to None
+    Send the request with timeout=RESPONSE_TIMEOUT_SEC
+    """
+    url = endpoint[URL]
+    method = endpoint.get(METHOD, GET)
+    headers = endpoint.get(HEADERS)
+    body = string_to_json_parser(endpoint.get(BODY, None))
 
     try:
-        response = requests.request(method, url, headers=headers, json=body)
-        if 200 <= response.status_code < 300:
-            return "UP"
-        else:
-            return "DOWN"
+        response = requests.request(method, url, headers=headers, json=body, timeout=RESPONSE_TIMEOUT_SEC)
+        return SERVER_UP if LOWER_STATUS_CODE <= response.status_code < UPPER_STATUS_CODE else SERVER_DOWN
     except requests.RequestException:
-        return "DOWN"
+        return SERVER_DOWN
 
-# Main function to monitor endpoints
-def monitor_endpoints(file_path):
-    config = load_config(file_path)
-    domain_stats = defaultdict(lambda: {"up": 0, "total": 0})
 
-    while True:
-        for endpoint in config:
-            domain = endpoint["url"].split("//")[-1].split("/")[0]
+def monitor_endpoints(yaml_endpoint_gen, domain_stats):
+    """
+    Child-Thread function to monitor endpoints
+
+    global stop_main_thread - Use the global flag to inform the Main-thread of an exception
+    (time.perf_counter() - start_time) < CYCLE_TIMEOUT_SEC - Limit the monitoring to CYCLE_TIMEOUT_SEC
+    (endpoint := next(yaml_endpoint_gen, None)) is not None - Assignment operator to return the next endpoint or None
+    domain = urlparse(endpoint[URL]).hostname - returns the domain without port
+    """
+    global stop_main_thread
+    try:
+        start_time = time.perf_counter()
+        while (endpoint := next(yaml_endpoint_gen, None)) is not None and (time.perf_counter() - start_time) < CYCLE_TIMEOUT_SEC:
+            domain = urlparse(endpoint[URL]).hostname
             result = check_health(endpoint)
+            domain_stats[TOTAL_ENDPOINTS][TOTAL] += 1
+            domain_stats[domain][TOTAL] += 1
+            if result == SERVER_UP:
+                domain_stats[domain][SERVER_UP] += 1
+                domain_stats[TOTAL_ENDPOINTS][SERVER_UP] += 1
+    except Exception as e:
+        stop_main_thread = True
+        raise e
 
-            domain_stats[domain]["total"] += 1
-            if result == "UP":
-                domain_stats[domain]["up"] += 1
-
-        # Log cumulative availability percentages
+def availability_cycles(file_path):
+    """
+    Main-Thread function launches Child-Thread and prints out the results
+    Executes Child-Thread every CYCLE_TIMEOUT_SEC
+    """
+    while not stop_main_thread:
+        yaml_endpoint_gen = load_config(file_path)# For memory saving, read YAML file as generator for robust endpoints
+        domain_stats = defaultdict(lambda: {SERVER_UP: 0, TOTAL: 0})
+        t = threading.Thread(target=monitor_endpoints, args=(yaml_endpoint_gen, domain_stats,),
+                             daemon=True)  # Using threads to keep the check cycle within 15 seconds regardless to the time response
+        t.start()
+        t.join(CYCLE_TIMEOUT_SEC)
         for domain, stats in domain_stats.items():
-            availability = round(100 * stats["up"] / stats["total"])
-            print(f"{domain} has {availability}% availability percentage")
-
-        print("---")
-        time.sleep(15)
+            availability = round(100 * stats[SERVER_UP] / stats[TOTAL])
+            print(LOG_AVAILABILITY_RESULTS.format(domain, availability, stats[TOTAL]))
+        print(PRINT_SEPARATOR)
 
 # Entry point of the program
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) != 2:
-        print("Usage: python monitor.py <config_file_path>")
+        print(USAGE_MSG)
+        sys.exit(1)
+    elif not sys.argv[1].lower().endswith(DOT_YAML):
+        print(FILE_IS_NOT_YAML_MSG)
         sys.exit(1)
 
     config_file = sys.argv[1]
+
     try:
-        monitor_endpoints(config_file)
+        availability_cycles(config_file)
     except KeyboardInterrupt:
-        print("\nMonitoring stopped by user.")
+        print(KEYBOARD_INTERRUPT_MSG)
