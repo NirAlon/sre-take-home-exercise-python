@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import threading
 from constants import *
 
-stop_main_thread = False # A global argument to inform the main thread that exception occurs in child thread
+stop_main_thread = False
 
 def load_config(file_path):
     """
@@ -74,10 +74,9 @@ def availability_cycles(file_path):
     Executes Child-Thread every CYCLE_TIMEOUT_SEC
     """
     while not stop_main_thread:
-        yaml_endpoint_gen = load_config(file_path)# For memory saving, read YAML file as generator for robust endpoints
+        yaml_endpoint_gen = load_config(file_path)
         domain_stats = defaultdict(lambda: {SERVER_UP: 0, TOTAL: 0})
-        t = threading.Thread(target=monitor_endpoints, args=(yaml_endpoint_gen, domain_stats,),
-                             daemon=True)  # Using threads to keep the check cycle within 15 seconds regardless to the time response
+        t = threading.Thread(target=monitor_endpoints, args=(yaml_endpoint_gen, domain_stats,), daemon=True)
         t.start()
         t.join(CYCLE_TIMEOUT_SEC)
         for domain, stats in domain_stats.items():
@@ -85,7 +84,7 @@ def availability_cycles(file_path):
             print(LOG_AVAILABILITY_RESULTS.format(domain, availability, stats[TOTAL]))
         print(PRINT_SEPARATOR)
 
-# Entry point of the program
+
 if __name__ == "__main__":
     import sys
 
