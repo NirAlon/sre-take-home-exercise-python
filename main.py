@@ -1,33 +1,18 @@
 import time
-import yaml
 import requests
 from collections import defaultdict
-import json
-from urllib.parse import urlparse
-import threading
 from constants import *
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from utils import string_to_json_parser, load_config, url_to_domain_parser
 
 stop_main_thread = False
-
-def load_config(file_path):
-    """
-    Use the generator to load the config file and yield endpoint values one by one.
-    """
-    with open(file_path, 'r') as file:
-        for endpoint in yaml.safe_load(file):
-            yield endpoint
-
-
-def string_to_json_parser(element):
-    """
-    Parses the body element to JSON, if body is missing return "None".
-    """
-    return json.loads(element) if element else None
 
 
 def check_health(endpoint):
     """
     Function to perform health checks
+    Returns the domain and state of the endpoint
+
     If 'method' value is missing set default to "GET"
     Parse body to JSON or set body to None
     Send the request with timeout=RESPONSE_TIMEOUT_SEC
@@ -44,46 +29,50 @@ def check_health(endpoint):
         return SERVER_DOWN
 
 
-def monitor_endpoints(yaml_endpoint_gen, domain_stats):
+def monitor_endpoints(endpoint):
     """
     Child-Thread function to monitor endpoints
+    Returns the domain and it's endpoint state
 
-    global stop_main_thread - Use the global flag to inform the Main-thread of an exception
-    (time.perf_counter() - start_time) < CYCLE_TIMEOUT_SEC - Limit the monitoring to CYCLE_TIMEOUT_SEC
-    (endpoint := next(yaml_endpoint_gen, None)) is not None - Assignment operator to return the next endpoint or None
-    domain = urlparse(endpoint[URL]).hostname - returns the domain without port
+    global stop_main_thread - Use the global flag to inform the Main-thread of an exception,
+    domain = url_to_domain_parser - Extract the domain from the url.
     """
     global stop_main_thread
     try:
-        start_time = time.perf_counter()
-        while (endpoint := next(yaml_endpoint_gen, None)) is not None and (time.perf_counter() - start_time) < CYCLE_TIMEOUT_SEC:
-            domain = urlparse(endpoint[URL]).hostname
-            result = check_health(endpoint)
-            domain_stats[TOTAL_ENDPOINTS][TOTAL] += 1
-            domain_stats[domain][TOTAL] += 1
-            if result == SERVER_UP:
-                domain_stats[domain][SERVER_UP] += 1
-                domain_stats[TOTAL_ENDPOINTS][SERVER_UP] += 1
+        domain = url_to_domain_parser(endpoint[URL])
+        result = check_health(endpoint)
+        return domain , 1 if result == SERVER_UP else 0
     except Exception as e:
         stop_main_thread = True
         raise e
 
 def availability_cycles(file_path):
     """
-    Main-Thread function launches Child-Thread and prints out the results
-    Executes Child-Thread every CYCLE_TIMEOUT_SEC
+    Main-Thread function uses ThreadPool to execute Child-Thread
+    Aggregating and prints out the results
+
+    Every monitor cycle is complete in CYCLE_TIMEOUT_SEC
     """
     while not stop_main_thread:
-        yaml_endpoint_gen = load_config(file_path)
         domain_stats = defaultdict(lambda: {SERVER_UP: 0, TOTAL: 0})
-        t = threading.Thread(target=monitor_endpoints, args=(yaml_endpoint_gen, domain_stats,), daemon=True)
-        t.start()
-        t.join(CYCLE_TIMEOUT_SEC)
-        for domain, stats in domain_stats.items():
-            availability = round(100 * stats[SERVER_UP] / stats[TOTAL])
-            print(LOG_AVAILABILITY_RESULTS.format(domain, availability, stats[TOTAL]))
-        print(PRINT_SEPARATOR)
-
+        start = time.perf_counter()
+        with ThreadPoolExecutor() as executor:
+            try:
+                results = executor.map(monitor_endpoints, load_config(file_path), timeout=CYCLE_TIMEOUT_SEC)
+                for domain, state in results:
+                    domain_stats[OVERALL_ENDPOINTS][SERVER_UP] += state
+                    domain_stats[OVERALL_ENDPOINTS][TOTAL] += 1
+                    domain_stats[domain][SERVER_UP] += state
+                    domain_stats[domain][TOTAL] += 1
+            except TimeoutError:
+                print(THREAD_POOL_TIMEOUT_MSG)
+            for domain, stats in domain_stats.items():
+                availability = round(100 * stats[SERVER_UP] / stats[TOTAL])
+                print(LOG_AVAILABILITY_RESULTS.format(domain, availability, stats[TOTAL]))
+            print(PRINT_SEPARATOR)
+            executor.shutdown()
+        if (time.perf_counter()-start)<CYCLE_TIMEOUT_SEC:
+            time.sleep(CYCLE_TIMEOUT_SEC-(time.perf_counter()-start))
 
 if __name__ == "__main__":
     import sys

@@ -2,11 +2,11 @@
 This repository refines the original code in https://github.com/fetch-rewards/sre-take-home-exercise-python.
 
 The Python script continuously determines the availability percentage of the endpoints in the provided YAML file.
-The `Main-Thread` periodically launches a `Child-Thread` for API requests.
-The `Child-Thread` reports the endpoints status (UP/DOWN) and counts number of successes.
-Once the `Child-Thread` completes or times out, the `Main-Thread` calculates and prints the availability percentage for each domain.
+The `Main-Thread` periodically launches a `Thread-Pool` for API requests.
+The `Thread-Pool` launches `Threads` that reports the endpoints status (UP/DOWN).
+Once the `Threads` completes or times out, the `Main-Thread` aggregate the results and prints the availability percentage of the overall endpoints and for each domain.
 
-The `Main-Thread` continues to execute the `Child-Thread` every 15 seconds, as long as the `Child-Thread` doesn't encounter any exceptions.
+The `Main-Thread` continues to execute the `Thread-Pool` every 15 seconds, as long as the `Threads` doesn't encounter any exceptions.
 
 
 ## Requirements
@@ -30,7 +30,9 @@ python3 ./main.py <path/to/config.yaml>
 ## Refines
 
 * `constants.py` - The original script contains hard-coded values. By defining constants, the script can be transformed into a generic concept and makes it easier to modify settings in the future.
-* `main.py`
+
+
+* `utils.py` - Gathering together usable functions.
   * ```python
     def load_config(file_path):
         """
@@ -40,23 +42,36 @@ python3 ./main.py <path/to/config.yaml>
         """
         Parses the body element to JSON, if body is missing return "None".
         """
+    def url_to_domain_parser(url):
+        """
+        Extract from string url the domain
+        """
+    ```
+* `main.py`
+  * ```python
     def check_health(endpoint):
         """
-        If 'method' value is missing, set default to "GET"
-        Parse body to JSON or set body to "None"
+        Function to perform health checks
+        Returns the domain and state of the endpoint
+    
+        If 'method' value is missing set default to "GET"
+        Parse body to JSON or set body to None
         Send the request with timeout=RESPONSE_TIMEOUT_SEC
         """
-    def monitor_endpoints(yaml_endpoint_gen, domain_stats):
+    def monitor_endpoints(endpoint):
         """
-        global stop_main_thread - Use the global flag to inform the Main-thread of an exception
-        (time.perf_counter() - start_time) < CYCLE_TIMEOUT_SEC - Limit the monitoring to CYCLE_TIMEOUT_SEC
-        (endpoint := next(yaml_endpoint_gen, None)) is not None - Assignment operator to return the next endpoint or "None"
-        domain = urlparse(endpoint[URL]).hostname - returns the domain without port
+        Child-Thread function to monitor endpoints
+        Returns the domain and it's endpoint state
+    
+        global stop_main_thread - Use the global flag to inform the Main-thread of an exception,
+        domain = url_to_domain_parser - Extract the domain from the url.
         """
     def availability_cycles(file_path):
         """
-        Main-Thread function launches Child-Thread and prints out the results
-        Executes Child-Thread every CYCLE_TIMEOUT_SEC
+        Main-Thread function uses ThreadPool to execute Child-Thread
+        Aggregating and prints out the results
+    
+        Every monitor cycle is complete in CYCLE_TIMEOUT_SEC
         """
     
     if __name__ == "__main__":
